@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: movie_db
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: Hung0901!
+      MYSQL_DATABASE: qlphim
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - ./database_qlphim/aireak_cinema_db.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_data:/var/lib/mysql
+    networks:
+      - movie-net
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: identity_service/Dockerfile
+    container_name: identity_service
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=Hung0901!
+      - DB_PORT=3306
+      - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      - db
+    networks:
+      - movie-net
+
+  movie-service:
+    build:
+      context: .
+      dockerfile: movie_service/Dockerfile
+    container_name: movie_service
+    ports:
+      - "8081:8081"
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=Hung0901!
+      - DB_PORT=3306
+      - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      - db
+    networks:
+      - movie-net
+
+  ticket-service:
+    build:
+      context: .
+      dockerfile: ticket_service/Dockerfile
+    container_name: ticket_service
+    ports:
+      - "8082:8082"
+    environment:
+      - DB_HOST=db
+      - DB_PASSWORD=Hung0901!
+      - DB_PORT=3306
+      - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      - db
+    networks:
+      - movie-net
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api_gateway/Dockerfile
+    container_name: api_gateway
+    ports:
+      - "8888:8888"
+    environment:
+      - IDENTITY_SERVICE_HOST=identity-service
+      - MOVIE_SERVICE_HOST=movie-service
+      - TICKET_SERVICE_HOST=ticket-service
+      - TZ=Asia/Ho_Chi_Minh
+    depends_on:
+      - identity-service
+      - movie-service
+      - ticket-service
+    networks:
+      - movie-net
+
+  frontend:
+    build:
+      context: ./film_management_frontend
+      dockerfile: Dockerfile
+    container_name: film_management_frontend
+    ports:
+      - "5173:80"
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+
+networks:
+  movie-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
