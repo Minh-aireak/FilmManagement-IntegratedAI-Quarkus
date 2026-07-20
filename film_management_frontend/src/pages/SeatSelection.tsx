@@ -187,9 +187,9 @@ const SeatSelection: React.FC = () => {
       };
 
       const response = await bookingService.bookTickets(bookingData);
-      showToast('Đặt vé thành công!', 'success');
-      setBookingResult(response);
-      setCurrentStep(2);
+      showToast('Đang chuyển hướng sang PayPal để thanh toán...', 'success');
+      const paymentRes = await bookingService.getPaymentUrl(response.bill.idBill);
+      window.location.href = paymentRes.paymentUrl;
     } catch (err: any) {
       const message = err.response?.data?.message || 'Đặt vé thất bại. Vui lòng thử lại.';
       showToast(message, 'error');

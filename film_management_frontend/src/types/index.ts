@@ -71,6 +71,7 @@ export interface Bill {
   idAccount: string;
   createdAt: string;
   totalAmount: number;
+  paymentStatus: string;
 }
 
 export interface AdminBillResponse {
@@ -175,3 +176,37 @@ export interface BookingRequest {
   seatCodes: string[];
 }
 
+// AI Chatbot Types
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_REVIEW' | 'BOOKING_ACTION';
+  data?: MovieSummaryDTO[];
+}
+
+export interface MovieSummaryDTO {
+  id: string;
+  title: string;
+}
+
+export interface ChatRequest {
+  conversationId?: string;
+  message: string;
+  context: {
+    userId?: string;
+    currentPage?: string;
+    movieId?: string;
+    showtimeId?: string;
+    metadata?: Record<string, string>;
+  };
+}
+
+export interface ChatResponse {
+  conversationId: string;
+  answer?: string;
+  timestamp: string;
+  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_REVIEW' | 'BOOKING_ACTION';
+  data?: MovieSummaryDTO[];
+}

@@ -1,5 +1,6 @@
 package org.film.management.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.quarkus.hibernate.orm.panache.PanacheQuery;
 import io.quarkus.panache.common.Page;
 import io.quarkus.panache.common.Sort;
@@ -19,6 +20,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @ApplicationScoped
 public class BookingService {
@@ -31,6 +33,10 @@ public class BookingService {
     @Inject JsonWebToken jwt;
     @Inject ShowtimePriceRepo showtimePriceRepo;
     @Inject RoomSeatRepo roomSeatRepo;
+    @Inject PayPalService payPalService;
+
+    @ConfigProperty(name = "paypal.frontend-url")
+    String paypalFrontendUrl;
 
     public List<String> getBookedSeats(String idShowtime) {
         List<ShowtimeSeat> bookedEntries = showtimeSeatRepo
@@ -81,6 +87,7 @@ public class BookingService {
 
         bill.createdAt = java.time.LocalDateTime.now();
         bill.totalAmount = 0;
+        bill.paymentStatus = "PENDING";
 
         billRepo.persist(bill);
 
@@ -100,11 +107,15 @@ public class BookingService {
 
             totalAmount += ticketPrice;
 
-            ShowtimeSeat newBookedSeat = new ShowtimeSeat();
-            newBookedSeat.idShowtime = request.idShowtime;
-            newBookedSeat.seatCode = seatCode;
-            newBookedSeat.status = "BOOKED";
-            showtimeSeatRepo.persist(newBookedSeat);
+            if (checkSeat != null) {
+                checkSeat.status = "BOOKED";
+            } else {
+                ShowtimeSeat newBookedSeat = new ShowtimeSeat();
+                newBookedSeat.idShowtime = request.idShowtime;
+                newBookedSeat.seatCode = seatCode;
+                newBookedSeat.status = "BOOKED";
+                showtimeSeatRepo.persist(newBookedSeat);
+            }
 
             Ticket ticket = new Ticket();
             ticket.idTicket = "Ticket_" + java.util.UUID.randomUUID();
@@ -244,6 +255,45 @@ public class BookingService {
                 .totalElement(query.count())
                 .data(data)
                 .build();
+    }
+
+    public String createPayPalPaymentUrl(String idBill) {
+        Bill bill = billRepo.findById(idBill);
+        if (bill == null) {
+            throw new RuntimeException("Hóa đơn không tồn tại");
+        }
+
+        String returnUrl = paypalFrontendUrl + "?idBill=" + idBill + "&result=success";
+        String cancelUrl = paypalFrontendUrl + "?idBill=" + idBill + "&result=cancel";
+
+        JsonNode order = payPalService.createOrder(idBill, bill.totalAmount, returnUrl, cancelUrl);
+
+        for (JsonNode link : order.get("links")) {
+            if ("approve".equals(link.get("rel").asText())) {
+                return link.get("href").asText();
+            }
+        }
+
+        throw new RuntimeException("Không tìm thấy đường dẫn thanh toán PayPal");
+    }
+
+    @Transactional
+    public BookingResponseDTO capturePayPalPayment(String idBill, String paypalOrderId) {
+        Bill bill = billRepo.findById(idBill);
+        if (bill == null) {
+            throw new RuntimeException("Hóa đơn không tồn tại");
+        }
+
+        JsonNode capture = payPalService.captureOrder(paypalOrderId);
+        String status = capture.get("status").asText();
+        if (!"COMPLETED".equals(status)) {
+            throw new RuntimeException("Thanh toán PayPal chưa hoàn tất: " + status);
+        }
+
+        bill.paymentStatus = "PAID";
+
+        List<Ticket> tickets = ticketRepo.find("idBill", idBill).list();
+        return new BookingResponseDTO(bill, tickets);
     }
 
 }

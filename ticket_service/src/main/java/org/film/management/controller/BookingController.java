@@ -45,6 +45,30 @@ public class BookingController {
         try {
             return Response.ok(bookingService.bookTickets(request)).build();
         } catch (RuntimeException e) {
+            e.printStackTrace(); // Added for debugging
+            return Response.status(Response.Status.BAD_REQUEST).entity(e.getMessage()).build();
+        }
+    }
+
+    @GET
+    @Path("/bookings/payment-url/{idBill}")
+    @Authenticated
+    public Response getPaymentUrl(@PathParam("idBill") String idBill) {
+        try {
+            String paymentUrl = bookingService.createPayPalPaymentUrl(idBill);
+            return Response.ok(java.util.Map.of("paymentUrl", paymentUrl)).build();
+        } catch (Exception e) {
+            return Response.status(Response.Status.BAD_REQUEST).entity(e.getMessage()).build();
+        }
+    }
+
+    @POST
+    @Path("/bookings/paypal/capture/{idBill}")
+    @Authenticated
+    public Response capturePayPalPayment(@PathParam("idBill") String idBill, @QueryParam("token") String paypalOrderId) {
+        try {
+            return Response.ok(bookingService.capturePayPalPayment(idBill, paypalOrderId)).build();
+        } catch (Exception e) {
             return Response.status(Response.Status.BAD_REQUEST).entity(e.getMessage()).build();
         }
     }

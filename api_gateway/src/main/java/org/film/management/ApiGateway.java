@@ -18,6 +18,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 @ApplicationScoped
 public class ApiGateway {
@@ -34,13 +35,21 @@ public class ApiGateway {
     @ConfigProperty(name = "ticket.service.host", defaultValue = "localhost")
     String ticketHost;
 
+    @ConfigProperty(name = "ai.service.host", defaultValue = "localhost")
+    String aiHost;
+
     private HttpClient httpClient;
 
     @PostConstruct
     void init() {
         HttpClientOptions options = new HttpClientOptions()
                 .setConnectTimeout(5000)
-                .setIdleTimeout(30);
+                // AI service can take 60-120 seconds for LLM API calls.
+                // Set idle timeout to 0 (disabled) because we handle timeouts
+                // at the application level instead.
+                .setIdleTimeout(0)
+                // Keep the connection alive for long requests
+                .setKeepAlive(true);
 
         httpClient = vertx.createHttpClient(options);
     }
@@ -100,6 +109,10 @@ public class ApiGateway {
 
         router.route("/tickets/*")
                 .handler(ctx -> forward(ctx, ticketHost, 8082, "Ticket"));
+
+        // AI Service
+        router.route("/ai/*")
+                .handler(ctx -> forward(ctx, aiHost, 8083, "AI"));
     }
 
     private void forward(
@@ -129,6 +142,8 @@ public class ApiGateway {
 
             handleProxyResponse(context, proxyRequest, serviceName);
 
+            // Pipe the incoming request body to the upstream request.
+            // This is fully reactive - no blocking.
             context.request()
                     .pipeTo(proxyRequest)
                     .onFailure(error -> fail(context, serviceName, error));
@@ -180,7 +195,8 @@ public class ApiGateway {
                 }
             });
 
-            // STREAM response body
+            // STREAM response body back to the client
+            // This is fully reactive - data flows as it arrives
             proxyResponse
                     .pipeTo(clientResponse)
                     .onFailure(error -> fail(context, serviceName, error));

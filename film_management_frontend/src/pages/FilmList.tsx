@@ -129,6 +129,7 @@ const FilmList: React.FC = () => {
   const [showScrollTop, setShowScrollTop] = useState(false);
   const categoriesRef = useRef<HTMLDivElement>(null);
 
+
   useEffect(() => {
     if (cachedFilms && movies.length === 0) {
       setMovies(cachedFilms.movies);
@@ -384,7 +385,7 @@ const FilmList: React.FC = () => {
 
       <button
         onClick={scrollToTop}
-        className={`fixed bottom-8 right-8 p-4 bg-green-600 text-white rounded-2xl shadow-[0_10px_30px_-5px_rgba(34,197,94,0.5)] transition-all duration-500 z-[100] hover:scale-110 active:scale-95 border border-green-400/30 ${
+        className={`fixed bottom-6 right-6 p-4 bg-green-600 text-white rounded-2xl shadow-[0_10px_30px_-5px_rgba(34,197,94,0.5)] transition-all duration-500 z-[100] hover:scale-110 active:scale-95 border border-green-400/30 ${
           showScrollTop ? 'translate-y-0 opacity-100 visible' : 'translate-y-20 opacity-0 invisible'
         }`}
       >

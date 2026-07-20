@@ -16,9 +16,11 @@ import AdminShowtimes from './pages/AdminShowtimes';
 import BillDetail from './pages/BillDetail';
 import History from './pages/History';
 import Profile from './pages/Profile';
+import PaymentResult from './pages/PaymentResult';
 import { ToastProvider } from './components/Toast';
 import { AuthProvider } from './context/AuthContext';
 import { CacheProvider } from './context/CacheContext';
+import AIChatbot from './components/AIChatbot';
 import './App.css';
 
 function App() {
@@ -27,6 +29,7 @@ function App() {
       <AuthProvider>
         <CacheProvider>
           <Router>
+            <AIChatbot />
             <Layout>
               <Routes>
               <Route path="/" element={<FilmList />} />
@@ -34,6 +37,7 @@ function App() {
             <Route path="/showtimes" element={<Showtimes />} />
             <Route path="/seat-selection/:showtimeId" element={<SeatSelection />} />
             <Route path="/bill-detail/:billId" element={<BillDetail />} />
+            <Route path="/payment-result" element={<PaymentResult />} />
             <Route path="/history" element={<History />} />
             <Route path="/profile" element={<Profile />} />
               <Route path="/login" element={<Login />} />

@@ -46,8 +46,9 @@ public class ShowtimeService {
         Movie movie = movieRepository.findByIdOptional(idMovie)
                 .orElseThrow(() -> new AppException(ErrorCode.MOVIE_NOT_FOUND));
 
+        LocalDateTime now = LocalDateTime.now();
         PanacheQuery<Showtime> query = showtimeRepository
-                .find("idMovie = ?1 order by showTime desc", idMovie)
+                .find("idMovie = ?1 and showTime >= ?2 order by showTime desc", idMovie, now)
                 .page(Page.of(page, size));
 
         List<ShowtimeResponse> data = query.list().stream()

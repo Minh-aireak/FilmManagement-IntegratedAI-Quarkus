@@ -20,6 +20,18 @@ export const bookingService = {
     return response.data;
   },
 
+  getPaymentUrl: async (idBill: string) => {
+    const response = await api.get<{ paymentUrl: string }>(`/bookings/payment-url/${idBill}`);
+    return response.data;
+  },
+
+  capturePayment: async (idBill: string, token: string) => {
+    const response = await api.post<BookingResponseDTO>(`/bookings/paypal/capture/${idBill}`, {}, {
+      params: { token }
+    });
+    return response.data;
+  },
+
   getBillDetail: async (idBill: string) => {
     const response = await api.get<BookingResponseDTO>(`/tickets/bills/${idBill}`);
     return response.data;

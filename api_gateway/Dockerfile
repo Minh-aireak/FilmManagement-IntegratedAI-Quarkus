@@ -1,5 +1,5 @@
 # Build stage
-FROM maven:3-eclipse-temurin-25 AS build
+FROM maven:3-eclipse-temurin-21 AS build
 WORKDIR /app
 
 # 1. Copy root pom.xml
@@ -10,6 +10,7 @@ COPY api_gateway/pom.xml api_gateway/
 COPY identity_service/pom.xml identity_service/
 COPY movie_service/pom.xml movie_service/
 COPY ticket_service/pom.xml ticket_service/
+COPY ai_service/pom.xml ai_service/
 
 # 3. Pre-fetch dependencies
 RUN mvn -pl api_gateway dependency:go-offline -B
@@ -21,7 +22,7 @@ COPY api_gateway/src api_gateway/src
 RUN mvn -pl api_gateway package -DskipTests -Dquarkus.profile=prod -Dquarkus.devservices.enabled=false
 
 # Run stage
-FROM eclipse-temurin:25-jre
+FROM eclipse-temurin:21-jre
 WORKDIR /deployments
 COPY --from=build /app/api_gateway/target/quarkus-app/lib/ /deployments/lib/
 COPY --from=build /app/api_gateway/target/quarkus-app/*.jar /deployments/

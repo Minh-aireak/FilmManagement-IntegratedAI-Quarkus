@@ -1,3 +1,4 @@
+
 # Script to run all services in development mode
 # Usage: ./dev.ps1
 
@@ -15,11 +16,15 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "title movie_servi
 Write-Host "Launching Ticket Service..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "title ticket_service; ./mvnw -pl ticket_service quarkus:dev"
 
-# 4. API Gateway (Port 8888)
+# 4. AI Service (Port 8083)
+Write-Host "Launching AI Service..."
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "title ai_service; ./mvnw -pl ai_service quarkus:dev"
+
+# 5. API Gateway (Port 8888)
 Write-Host "Launching API Gateway..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "title api_gateway; ./mvnw -pl api_gateway quarkus:dev"
 
-# 5. Frontend
+# 6. Frontend
 Write-Host "Launching Frontend..."
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "title frontend; cd film_management_frontend; npm run dev"
 

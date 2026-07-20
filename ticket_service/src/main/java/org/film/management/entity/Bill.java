@@ -13,4 +13,5 @@ public class Bill {
     public String idAccount;
     public LocalDateTime createdAt;
     public int totalAmount;
+    public String paymentStatus;
 }
