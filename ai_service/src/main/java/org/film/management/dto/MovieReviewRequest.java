@@ -29,4 +29,11 @@ public class MovieReviewRequest {
     /** Maximum number of reviews to return */
     @Builder.Default
     private Integer maxReviews = 5;
+
+    /** See {@link MovieSearchRequest#sanitized()} - models fill unused fields with "None". */
+    public MovieReviewRequest sanitized() {
+        movieTitle = MovieSearchRequest.blankToNull(movieTitle);
+        language = MovieSearchRequest.blankToNull(language);
+        return this;
+    }
 }

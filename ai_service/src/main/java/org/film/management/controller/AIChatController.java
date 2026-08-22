@@ -32,8 +32,11 @@ public class AIChatController {
 
         } catch (Exception e) {
             LOG.errorf("Error processing chat request: %s", e.getMessage());
+            // Built as a map, not string concatenation: a message containing a quote or a
+            // newline used to produce malformed JSON that the frontend could not parse,
+            // turning every backend error into an unhelpful "unknown error" in the chat box.
             return Response.serverError()
-                    .entity("{\"error\": \"" + e.getMessage() + "\"}")
+                    .entity(java.util.Map.of("error", String.valueOf(e.getMessage())))
                     .build();
         }
     }

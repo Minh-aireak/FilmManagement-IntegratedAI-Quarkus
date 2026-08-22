@@ -17,7 +17,9 @@ public class GlobalExceptionHandler implements ExceptionMapper<Exception> {
 
     @Override
     public Response toResponse(Exception exception) {
-        LOG.errorf("Exception occurred: %s", exception.getMessage(), exception);
+        // errorf() treats a trailing throwable as a format argument, so the stack trace was
+        // being swallowed and every failure looked like a bare "HTTP 400 Bad Request".
+        LOG.error("Exception occurred: " + exception.getMessage(), exception);
 
         Map<String, Object> errorResponse = new HashMap<>();
         errorResponse.put("error", exception.getMessage());

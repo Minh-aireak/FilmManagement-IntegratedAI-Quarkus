@@ -50,6 +50,44 @@ public class MovieSearchRequest {
     @Builder.Default
     private String sortDirection = "desc";
 
-    /** Date to find movies showing on (format: yyyy-MM-dd, e.g. "2026-07-20"). Uses showtime data to determine which movies are playing. */
+    /** Date to find movies showing on (format: yyyy-MM-dd). Uses showtime data to determine which movies are playing. */
     private String showingDate;
+
+    /**
+     * Clear out the placeholders language models emit for "no value".
+     * <p>
+     * Models routinely fill unused optional parameters with the literal strings
+     * {@code "None"}, {@code "null"}, {@code "N/A"} or {@code ""} instead of omitting them.
+     * Left alone those reach the filters as real values - {@code showingDate="None"} became
+     * {@code LocalDate.parse("None")} in movie-service and failed the whole request.
+     * </p>
+     */
+    public MovieSearchRequest sanitized() {
+        keyword = blankToNull(keyword);
+        genre = blankToNull(genre);
+        language = blankToNull(language);
+        author = blankToNull(author);
+        actorName = blankToNull(actorName);
+        sortBy = blankToNull(sortBy);
+        sortDirection = blankToNull(sortDirection);
+        showingDate = blankToNull(showingDate);
+        return this;
+    }
+
+    static String blankToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()
+                || trimmed.equalsIgnoreCase("none")
+                || trimmed.equalsIgnoreCase("null")
+                || trimmed.equalsIgnoreCase("nil")
+                || trimmed.equalsIgnoreCase("undefined")
+                || trimmed.equalsIgnoreCase("n/a")
+                || trimmed.equalsIgnoreCase("string")) {
+            return null;
+        }
+        return trimmed;
+    }
 }

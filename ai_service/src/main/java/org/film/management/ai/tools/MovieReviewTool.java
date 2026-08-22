@@ -23,6 +23,8 @@ public class MovieReviewTool {
 
     private static final Logger LOG = Logger.getLogger(MovieReviewTool.class);
 
+    private static final int REVIEW_EXCERPT_CHARS = 400;
+
     @Inject
     @RestClient
     TmdbClient tmdbClient;
@@ -107,7 +109,7 @@ public class MovieReviewTool {
             List<String> reviews = reviewResponse.getResults() != null
                     ? reviewResponse.getResults().stream()
                             .limit(maxReviews)
-                            .map(review -> review.getAuthor() + ": " + review.getContent())
+                            .map(review -> review.getAuthor() + ": " + excerpt(review.getContent()))
                             .collect(Collectors.toList())
                     : List.of();
 
@@ -132,6 +134,21 @@ public class MovieReviewTool {
             LOG.errorf("Error getting movie reviews: %s", e.getMessage());
             throw new AIServiceException("Failed to get movie reviews: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * TMDB review bodies routinely run to several thousand characters each. Five of them sent
+     * verbatim dwarf the rest of the prompt and dominate the response time, while the model
+     * only needs enough text to judge the tone.
+     */
+    private static String excerpt(String content) {
+        if (content == null) {
+            return "";
+        }
+        String cleaned = content.replaceAll("\\s+", " ").trim();
+        return cleaned.length() <= REVIEW_EXCERPT_CHARS
+                ? cleaned
+                : cleaned.substring(0, REVIEW_EXCERPT_CHARS).trim() + "…";
     }
 
     private String calculateSentiment(double rating) {

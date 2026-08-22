@@ -138,7 +138,13 @@ services:
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       TMDB_API_KEY: ${TMDB_API_KEY}
+      MOVIE_SERVICE_HOST: ${MOVIE_SERVICE_HOST}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-dots-studio/dots-3-note-preview:free}
+      OPENROUTER_FALLBACK_MODEL: ${OPENROUTER_FALLBACK_MODEL:-nvidia/nemotron-nano-9b-v2:free}
       TZ: ${TZ}
+
+    depends_on:
+      - movie-service
 
     networks:
       - movie-net

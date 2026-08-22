@@ -30,8 +30,12 @@ import org.film.management.dto.ReviewDto;
 import org.jboss.logging.Logger;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -59,11 +63,41 @@ public class AIChatService {
 
     private static final Logger LOG = Logger.getLogger(AIChatService.class);
 
-    private static final int MAX_TOOL_ITERATIONS = 5;
+    /**
+     * Every iteration is one OpenRouter request. Answers that need more than three rounds
+     * are almost always a model looping on a tool it cannot satisfy, and on the free tier
+     * those wasted rounds come straight out of the daily allowance.
+     */
+    private static final int MAX_TOOL_ITERATIONS = 3;
+
+    private static final int MEMORY_WINDOW = 10;
+
+    private static final int MAX_CACHED_ANSWERS = 200;
+
+    /** Longest plot summary handed back to the model; it never quotes more than a line of it. */
+    private static final int DESCRIPTION_CHARS = 220;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final Map<String, ChatMemory> memories = new ConcurrentHashMap<>();
+
+    /**
+     * Replay cache. The free tier allows only a few dozen model requests per day, and
+     * rehearsing a demo means asking the same questions over and over - those repeats
+     * should not cost anything. Keyed on the whole sequence of user turns, so replaying an
+     * identical conversation hits the cache on every turn while a genuinely new follow-up
+     * still goes to the model.
+     */
+    private final Map<String, CachedAnswer> answerCache = new ConcurrentHashMap<>();
+
+    /** conversationId -&gt; the user turns seen so far, used to build the cache key. */
+    private final Map<String, List<String>> transcripts = new ConcurrentHashMap<>();
+
+    private record CachedAnswer(ChatResponse response, long storedAtMillis) {
+    }
+
+    /** Immutable and identical on every call, so it is built once instead of per iteration. */
+    private List<dev.langchain4j.agent.tool.ToolSpecification> toolSpecifications;
 
     @Inject
     AIConfig aiConfig;
@@ -76,13 +110,21 @@ public class AIChatService {
 
     private AIService aiService;
     private ChatLanguageModel chatModel;
+    private ChatLanguageModel fallbackChatModel;
 
     @PostConstruct
     public void init() {
         LOG.infof("Initializing AI Chat Service with provider: %s, model: %s",
                 aiConfig.getProvider(), aiConfig.getModel());
 
-        this.chatModel = createChatModel();
+        this.chatModel = createChatModel(aiConfig.getModel());
+        this.toolSpecifications = buildToolSpecifications();
+
+        String fallback = aiConfig.getFallbackModel();
+        if (fallback != null && !fallback.isBlank() && !fallback.equals(aiConfig.getModel())) {
+            this.fallbackChatModel = createChatModel(fallback);
+            LOG.infof("Fallback model configured: %s", fallback);
+        }
 
         // Use AiServices to automatically:
         // 1. Bind @Tool annotated methods from tool instances
@@ -107,10 +149,40 @@ public class AIChatService {
             return executeToolLoop(request);
 
         } catch (Exception e) {
-            LOG.errorf("Error processing chat message: %s", e.getMessage());
-            LOG.errorf("Stack trace:", e);
+            if (isDailyQuotaExhausted(e)) {
+                // Never let this reach the user as a 500: on the free tier it is an expected
+                // end-of-day condition, and a stack trace in the chat box during a demo is
+                // far worse than a plain sentence explaining what happened.
+                LOG.warn("OpenRouter free daily quota exhausted - answering with a notice");
+                return ChatResponse.builder()
+                        .conversationId(request.getConversationId())
+                        .answer("Trợ lý AI đã dùng hết lượt hỏi miễn phí của hôm nay. "
+                                + "Hạn mức được cấp lại lúc 07:00 sáng mai, bạn quay lại sau nhé. "
+                                + "Trong lúc đó bạn vẫn xem phim và đặt vé bình thường được.")
+                        .type("TEXT")
+                        .timestamp(LocalDateTime.now().toString())
+                        .build();
+            }
+            LOG.error("Error processing chat message: " + e.getMessage(), e);
             throw new org.film.management.exception.AIServiceException("Failed to process chat message: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * OpenRouter caps free-model usage per account per day, not per model, so once this
+     * trips no amount of switching models helps until the daily reset.
+     */
+    private static boolean isDailyQuotaExhausted(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage();
+            if (message != null && message.contains("free-models-per-day")) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
     }
 
     /**
@@ -132,34 +204,45 @@ public class AIChatService {
         }
 
         ChatMemory chatMemory = memories.computeIfAbsent(conversationId,
-                id -> MessageWindowChatMemory.withMaxMessages(10));
+                id -> MessageWindowChatMemory.withMaxMessages(MEMORY_WINDOW));
 
-        // Add user message to history
-        chatMemory.add(UserMessage.from(request.getMessage()));
-
-        // Add system prompt if not present in the chatMemory
-        List<ChatMessage> history = chatMemory.messages();
-        boolean hasSystemMessage = history.stream().anyMatch(m -> m instanceof SystemMessage);
-
+        // The system prompt has to go in FIRST. MessageWindowChatMemory only shields a
+        // SystemMessage from eviction while it sits at index 0, so adding it after the user
+        // message would both send it out of order and let it be dropped once the window
+        // fills up - the bot would silently lose its instructions mid-conversation.
+        boolean hasSystemMessage = chatMemory.messages().stream().anyMatch(m -> m instanceof SystemMessage);
         if (!hasSystemMessage) {
             String systemPrompt = getSystemPromptFromAnnotation();
             if (systemPrompt != null && !systemPrompt.isBlank()) {
-                chatMemory.add(SystemMessage.from(systemPrompt));
+                chatMemory.add(SystemMessage.from(systemPrompt + currentDateSection()));
             }
         }
 
-        // Load the full conversation history (which now includes system prompt + history + current user message)
+        chatMemory.add(UserMessage.from(request.getMessage()));
+
+        List<String> transcript = transcripts.computeIfAbsent(conversationId,
+                id -> Collections.synchronizedList(new ArrayList<>()));
+        transcript.add(request.getMessage());
+
+        String cacheKey = cacheKey(transcript);
+        ChatResponse cached = lookupCachedAnswer(cacheKey, conversationId);
+        if (cached != null) {
+            LOG.infof("Cache hit - answering without spending an OpenRouter request");
+            chatMemory.add(AiMessage.from(cached.getAnswer() != null
+                    ? cached.getAnswer()
+                    : describeMovieList(cached)));
+            return cached;
+        }
+
+        // Load the full conversation history (system prompt + history + current user message)
         List<ChatMessage> messages = new ArrayList<>(chatMemory.messages());
 
         // Execute tool loop
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
             LOG.debugf("--- AI Iteration %d ---", iteration);
 
-            // Get tool specifications from the @Tool annotations
-            List<dev.langchain4j.agent.tool.ToolSpecification> toolSpecs = getToolSpecifications();
-
             // Call the model
-            Response<AiMessage> response = chatModel.generate(messages, toolSpecs);
+            Response<AiMessage> response = generate(messages);
             AiMessage aiMessage = response.content();
 
             LOG.debugf("AI response - text: %s", aiMessage.text());
@@ -181,10 +264,13 @@ public class AIChatService {
                     LOG.infof("Detected searchMovies tool call - checking if list or detail query");
                     ChatResponse movieListResponse = handleMovieListResponse(aiMessage.toolExecutionRequests(), conversationId);
                     if (movieListResponse != null) {
-                        // List query - return MOVIE_LIST structured response immediately
-                        // Add the AI message requesting tool to history
-                        chatMemory.add(aiMessage);
-                        return movieListResponse;
+                        // List query - return MOVIE_LIST structured response immediately.
+                        // Persist a plain-text stand-in rather than the tool-call message: we
+                        // answer without completing the tool round trip, so storing aiMessage
+                        // would leave tool_calls with no matching tool results in the history
+                        // and the provider rejects the next request in this conversation.
+                        chatMemory.add(AiMessage.from(describeMovieList(movieListResponse)));
+                        return remember(cacheKey, movieListResponse);
                     }
                     // Detail query (specific movie name) - continue tool loop to let LLM generate text
                     LOG.infof("Detail query - continuing tool loop for LLM text generation");
@@ -219,12 +305,12 @@ public class AIChatService {
             if (aiMessage.text() != null && !aiMessage.text().trim().isEmpty()) {
                 LOG.infof("Got final text response at iteration %d", iteration);
                 chatMemory.add(aiMessage); // Persist final response to memory
-                return ChatResponse.builder()
+                return remember(cacheKey, ChatResponse.builder()
                         .conversationId(conversationId)
                         .answer(aiMessage.text())
                         .type("TEXT")
                         .timestamp(LocalDateTime.now().toString())
-                        .build();
+                        .build());
             }
 
             // Empty response
@@ -281,7 +367,8 @@ public class AIChatService {
             }
 
             // Parse arguments into strongly typed request object
-            MovieSearchRequest searchRequestObj = MAPPER.readValue(searchRequest.arguments(), MovieSearchRequest.class);
+            MovieSearchRequest searchRequestObj = MAPPER.readValue(searchRequest.arguments(), MovieSearchRequest.class)
+                    .sanitized();
 
             LOG.infof("MOVIE_LIST - request: %s", searchRequestObj);
 
@@ -402,12 +489,12 @@ public class AIChatService {
         try {
             switch (toolName) {
                 case "searchMovies": {
-                    MovieSearchRequest searchRequest = MAPPER.readValue(arguments, MovieSearchRequest.class);
+                    MovieSearchRequest searchRequest = MAPPER.readValue(arguments, MovieSearchRequest.class).sanitized();
                     List<MovieDto> movies = movieSearchTool.searchMovies(searchRequest);
-                    return MAPPER.writeValueAsString(movies);
+                    return MAPPER.writeValueAsString(toCompactView(movies));
                 }
                 case "getMovieReviews": {
-                    MovieReviewRequest reviewRequest = MAPPER.readValue(arguments, MovieReviewRequest.class);
+                    MovieReviewRequest reviewRequest = MAPPER.readValue(arguments, MovieReviewRequest.class).sanitized();
                     ReviewDto review = movieReviewTool.getMovieReviews(reviewRequest);
                     return MAPPER.writeValueAsString(review);
                 }
@@ -423,9 +510,9 @@ public class AIChatService {
 
     /**
      * Build tool specifications from the @Tool annotations on tool classes.
-     * This is only used in the fallback path.
+     * Called once from init(); the result is reused for every request.
      */
-    private List<dev.langchain4j.agent.tool.ToolSpecification> getToolSpecifications() {
+    private List<dev.langchain4j.agent.tool.ToolSpecification> buildToolSpecifications() {
         List<dev.langchain4j.agent.tool.ToolSpecification> specs = new ArrayList<>();
 
         // searchMovies tool spec
@@ -451,7 +538,7 @@ public class AIChatService {
                 .addParameter("sortDirection", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
                         dev.langchain4j.agent.tool.JsonSchemaProperty.description("\"asc\" or \"desc\". Default: \"desc\""))
                 .addParameter("showingDate", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
-                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Date to find movies showing on (format: yyyy-MM-dd, e.g. \"2026-07-20\"). Uses showtime data"))
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Date to find movies showing on, format yyyy-MM-dd. For today/tonight use the date given in the NGAY HIEN TAI section of the system prompt. Uses showtime data"))
                 .build());
 
         // getMovieReviews tool spec
@@ -471,6 +558,107 @@ public class AIChatService {
         return specs;
     }
 
+    /** One conversation replayed turn-for-turn produces the same key at every turn. */
+    private static String cacheKey(List<String> transcript) {
+        synchronized (transcript) {
+            return String.join(" ", transcript).toLowerCase().trim();
+        }
+    }
+
+    private ChatResponse lookupCachedAnswer(String key, String conversationId) {
+        if (!aiConfig.isCacheEnabled()) {
+            return null;
+        }
+        CachedAnswer hit = answerCache.get(key);
+        if (hit == null) {
+            return null;
+        }
+        long ageMinutes = (System.currentTimeMillis() - hit.storedAtMillis()) / 60_000;
+        if (ageMinutes >= aiConfig.getCacheTtlMinutes()) {
+            answerCache.remove(key);
+            return null;
+        }
+        // Re-stamp so the client keeps tracking its own conversation, not the cached one.
+        ChatResponse source = hit.response();
+        return ChatResponse.builder()
+                .conversationId(conversationId)
+                .answer(source.getAnswer())
+                .type(source.getType())
+                .data(source.getData())
+                .review(source.getReview())
+                .timestamp(LocalDateTime.now().toString())
+                .build();
+    }
+
+    private ChatResponse remember(String key, ChatResponse response) {
+        if (aiConfig.isCacheEnabled()) {
+            if (answerCache.size() >= MAX_CACHED_ANSWERS) {
+                answerCache.clear();
+            }
+            answerCache.put(key, new CachedAnswer(response, System.currentTimeMillis()));
+        }
+        return response;
+    }
+
+    /**
+     * Plain-text stand-in for a MOVIE_LIST answer so the next turn sees coherent history.
+     */
+    private String describeMovieList(ChatResponse response) {
+        List<MovieSummaryDTO> data = response.getData();
+        if (data == null || data.isEmpty()) {
+            return "Đã tìm nhưng không có phim nào phù hợp.";
+        }
+        String titles = data.stream()
+                .map(MovieSummaryDTO::getTitle)
+                .collect(Collectors.joining(", "));
+        return "Đã hiển thị cho người dùng danh sách " + data.size() + " phim: " + titles + ".";
+    }
+
+    /**
+     * Poster URLs and full plot summaries are pure weight in the prompt - the model never
+     * quotes them back - so strip them before the tool result re-enters the context.
+     */
+    private List<Map<String, Object>> toCompactView(List<MovieDto> movies) {
+        List<Map<String, Object>> compact = new ArrayList<>();
+        for (MovieDto movie : movies) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("idMovie", movie.getIdMovie());
+            row.put("nameMovie", movie.getNameMovie());
+            row.put("author", movie.getAuthor());
+            row.put("duration", movie.getDuration());
+            row.put("language", movie.getLanguage());
+            row.put("actors", movie.getActors());
+            row.put("categories", movie.getCategories());
+            row.put("description", truncate(movie.getDescription(), DESCRIPTION_CHARS));
+            compact.add(row);
+        }
+        return compact;
+    }
+
+    private static String truncate(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars).trim() + "…";
+    }
+
+    /**
+     * The model has no clock of its own, so "phim đang chiếu hôm nay" would otherwise be
+     * answered with whatever date happens to appear in the prompt examples. Append the
+     * real date to the system prompt so showingDate is filled in correctly.
+     */
+    private String currentDateSection() {
+        LocalDate today = LocalDate.now();
+        return "\n\n===== NGÀY HIỆN TẠI =====\n"
+                + "Hôm nay là " + today.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy"))
+                + ", tức showingDate=\"" + today + "\".\n"
+                + "- \"hôm nay\", \"đang chiếu\", \"tối nay\" -> showingDate=\"" + today + "\"\n"
+                + "- \"ngày mai\" -> showingDate=\"" + today.plusDays(1) + "\"\n"
+                + "- \"cuối tuần này\", \"sắp chiếu\" -> dùng một ngày từ " + today
+                + " trở đi, KHÔNG dùng ngày quá khứ.\n"
+                + "TUYỆT ĐỐI không lấy ngày trong các ví dụ ở trên làm ngày hiện tại.";
+    }
+
     /**
      * Extract the system prompt from the @SystemMessage annotation on AIService interface.
      */
@@ -487,13 +675,33 @@ public class AIChatService {
         return null;
     }
 
-    private ChatLanguageModel createChatModel() {
+    /**
+     * Free endpoints are rate limited, and a 429 halfway through a conversation would surface
+     * as a dead chat box. Retry the turn once on the secondary model - a different vendor, so
+     * a separate rate-limit pool - before letting the failure through.
+     */
+    private Response<AiMessage> generate(List<ChatMessage> messages) {
+        try {
+            return chatModel.generate(messages, toolSpecifications);
+        } catch (RuntimeException primaryFailure) {
+            // The daily cap is per account, so the fallback would burn another request and
+            // fail identically. Only a provider-side limit is worth retrying elsewhere.
+            if (fallbackChatModel == null || isDailyQuotaExhausted(primaryFailure)) {
+                throw primaryFailure;
+            }
+            LOG.warnf("Primary model %s failed (%s) - retrying on fallback %s",
+                    aiConfig.getModel(), primaryFailure.getMessage(), aiConfig.getFallbackModel());
+            return fallbackChatModel.generate(messages, toolSpecifications);
+        }
+    }
+
+    private ChatLanguageModel createChatModel(String modelName) {
         if ("openrouter".equalsIgnoreCase(aiConfig.getProvider())) {
             long timeoutSeconds = Math.max(aiConfig.getTimeout(), 120);
 
             return OpenAiChatModel.builder()
                     .apiKey(aiConfig.getApiKey())
-                    .modelName(aiConfig.getModel())
+                    .modelName(modelName)
                     .baseUrl(aiConfig.getBaseUrl())
                     .temperature(aiConfig.getTemperature())
                     .maxTokens(aiConfig.getMaxTokens())

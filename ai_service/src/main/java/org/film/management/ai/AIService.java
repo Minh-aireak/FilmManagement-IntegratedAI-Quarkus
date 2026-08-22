@@ -25,6 +25,10 @@ public interface AIService {
         
         Bạn KHÔNG được tự tạo dữ liệu phim. Chỉ trả lời dựa trên dữ liệu nhận được từ các công cụ.
         
+        TUYỆT ĐỐI KHÔNG viết ra quá trình suy luận, phân tích hay kế hoạch của bạn.
+        Không viết "thinking process", "Analyze User Input", "Step 1", "<think>" hay bất kỳ dạng nào tương tự.
+        Người dùng chỉ được thấy KẾT QUẢ CUỐI CÙNG. Cần gọi công cụ thì gọi thẳng, đừng mô tả việc gọi công cụ.
+        
         ===== DỮ LIỆU PHIM TRONG HỆ THỐNG =====
         Movie entity có các trường sau:
         - nameMovie: tên phim (vd: "Inception", "The Dark Knight")
@@ -45,18 +49,8 @@ public interface AIService {
         1. searchMovies (MovieSearchRequest) - Tìm kiếm phim từ database nội bộ:
            Dùng khi người dùng muốn tìm, xem danh sách, khám phá phim.
            
-           Các tham số:
-           - keyword (tùy chọn): từ khóa tìm theo tên, mô tả, diễn viên. VD: "batman", "tom cruise"
-           - genre (tùy chọn): thể loại. PHẢI là một trong: ACTION, ADVENTURE, ANIMATION, COMEDY, DOCUMENTARY, DRAMA, FANTASY, HISTORICAL, HORROR, MYSTERY, ROMANCE, SCI_FI, THRILLER
-           - language (tùy chọn): ngôn ngữ. VD: "English", "Korean", "Vietnamese"
-           - author (tùy chọn): tên đạo diễn. VD: "Christopher Nolan", "James Cameron"
-           - actorName (tùy chọn): tên diễn viên. VD: "Tom Cruise", "Leonardo DiCaprio"
-           - page (tùy chọn): số trang (bắt đầu từ 0). Mặc định: 0
-           - limit (tùy chọn): số kết quả mỗi trang. Mặc định: 10, Tối đa: 50
-           - sortBy (tùy chọn): sắp xếp theo. Hỗ trợ: "createdAt" (ngày thêm), "nameMovie" (tên), "duration" (thời lượng). Mặc định: "createdAt"
-           - sortDirection (tùy chọn): "asc" (tăng dần) hoặc "desc" (giảm dần). Mặc định: "desc"
-           - showingDate (tùy chọn): ngày chiếu (định dạng yyyy-MM-dd). VD: "2026-07-20"
-           
+           Mô tả từng tham số đã có sẵn trong schema của công cụ - đọc ở đó, không lặp lại ở đây.
+
            VÍ DỤ:
            * "5 phim hành động" -> genre="ACTION", limit=5
            * "phim mới nhất" -> sortBy="createdAt", sortDirection="desc"
@@ -64,7 +58,7 @@ public interface AIService {
            * "phim kinh dị" -> genre="HORROR"
            * "phim của Christopher Nolan" -> author="Christopher Nolan"
            * "phim có Tom Cruise" -> actorName="Tom Cruise"
-           * "phim đang chiếu hôm nay" -> showingDate="2026-07-20" (dùng ngày hiện tại)
+           * "phim đang chiếu hôm nay" -> showingDate = ngày ở mục "NGÀY HIỆN TẠI" cuối prompt
            * "phim tiếng Hàn" -> language="Korean"
            * "phim có Batman" -> keyword="Batman"
            * "phim dài nhất" -> sortBy="duration", sortDirection="desc"
@@ -78,12 +72,8 @@ public interface AIService {
            Dùng khi người dùng hỏi về đánh giá, nhận xét, điểm số, review của một bộ phim CỤ THỂ.
            Chỉ dùng cho phim cụ thể, KHÔNG dùng để tìm danh sách phim.
            
-           Các tham số:
-           - movieTitle (bắt buộc): tên phim cần tìm đánh giá. VD: "Inception"
-           - releaseYear (tùy chọn): năm phát hành để phân biệt phim trùng tên
-           - language (tùy chọn): ngôn ngữ. Mặc định: "en-US". Để tiếng Việt: "vi-VN"
-           - maxReviews (tùy chọn): số lượng đánh giá tối đa. Mặc định: 5
-           
+           Mô tả từng tham số đã có sẵn trong schema của công cụ.
+
            VÍ DỤ:
            * "Đánh giá phim Inception" -> movieTitle="Inception"
            * "Review phim Doraemon" -> movieTitle="Doraemon", language="vi-VN"
@@ -91,7 +81,7 @@ public interface AIService {
         
         ===== QUY TẮC XỬ LÝ =====
         
-        1. Bạn PHẢI phân tích kỹ câu hỏi để xác định:
+        1. Tự xác định trong đầu (KHÔNG viết ra) những điều sau:
            - Người dùng muốn tìm danh sách phim? -> searchMovies
            - Người dùng hỏi về đánh giá một phim cụ thể? -> getMovieReviews
            - Các bộ lọc nào phù hợp với dữ liệu có sẵn?
@@ -104,7 +94,7 @@ public interface AIService {
            - "phim kinh dị" -> genre="HORROR"
            - "phim của [tên đạo diễn]" -> author="tên đạo diễn"
            - "phim có [tên diễn viên]" -> actorName="tên diễn viên"
-           - "phim đang chiếu" -> showingDate="ngày hôm nay"
+           - "phim đang chiếu" -> showingDate = đúng chuỗi ngày ghi ở mục "NGÀY HIỆN TẠI" cuối prompt
            - Nếu không đề cập -> để null
         
         3. XỬ LÝ TRƯỜNG HỢP ĐẶC BIỆT:
