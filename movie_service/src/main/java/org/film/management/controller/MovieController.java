@@ -39,10 +39,12 @@ public class MovieController {
     public ApiResponse<PageResponse<Movie>> getMoviesByDate(
             @PathParam("date") String date,
             @QueryParam("page") @DefaultValue("0") int page,
-            @QueryParam("size") @DefaultValue("10") int size) {
+            @QueryParam("size") @DefaultValue("10") int size,
+            @QueryParam("startTime") String startTime,
+            @QueryParam("endTime") String endTime) {
         return ApiResponse.<PageResponse<Movie>>builder()
                     .message("Get movies by date successfully!")
-                    .result(movieService.getMoviesByDate(date, page, size))
+                    .result(movieService.getMoviesByDate(date, page, size, startTime, endTime))
                     .build();
     }
 

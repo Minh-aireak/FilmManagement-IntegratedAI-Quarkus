@@ -26,6 +26,7 @@ interface AdminShowtimesCache {
   movieId?: string;
   date?: string;
   roomId?: string;
+  searchTerm?: string;
 }
 
 interface AdminAccountsCache {

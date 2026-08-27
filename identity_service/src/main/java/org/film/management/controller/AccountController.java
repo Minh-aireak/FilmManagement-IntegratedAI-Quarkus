@@ -20,7 +20,7 @@ public class AccountController {
     @GET
     @RolesAllowed("ADMIN")
     public List<Account> getAllAccounts() {
-        return accountService.getAll();
+        return accountService.getCustomers();
     }
 
     @GET

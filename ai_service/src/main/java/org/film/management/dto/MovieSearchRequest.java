@@ -53,6 +53,18 @@ public class MovieSearchRequest {
     /** Date to find movies showing on (format: yyyy-MM-dd). Uses showtime data to determine which movies are playing. */
     private String showingDate;
 
+    /** Earliest showtime on showingDate, inclusive, in HH:mm format. */
+    private String startTime;
+
+    /** Latest showtime on showingDate, inclusive, in HH:mm format. */
+    private String endTime;
+
+    /** Month used to rank hot movies by sold-ticket count (1-12). */
+    private Integer popularityMonth;
+
+    /** Year used together with popularityMonth. */
+    private Integer popularityYear;
+
     /**
      * Clear out the placeholders language models emit for "no value".
      * <p>
@@ -71,6 +83,8 @@ public class MovieSearchRequest {
         sortBy = blankToNull(sortBy);
         sortDirection = blankToNull(sortDirection);
         showingDate = blankToNull(showingDate);
+        startTime = blankToNull(startTime);
+        endTime = blankToNull(endTime);
         return this;
     }
 

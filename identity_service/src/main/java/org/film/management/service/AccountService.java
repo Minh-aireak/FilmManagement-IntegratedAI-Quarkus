@@ -73,8 +73,8 @@ public class AccountService {
         return true;
     }
 
-    public List<Account> getAll() {
-        return accountRepository.listAll();
+    public List<Account> getCustomers() {
+        return accountRepository.findCustomers();
     }
 
     public Account getById() {

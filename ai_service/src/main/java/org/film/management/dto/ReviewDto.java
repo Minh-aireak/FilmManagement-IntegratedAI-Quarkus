@@ -12,7 +12,9 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class ReviewDto {
-    
+
+    /** External data provider used for this review response. */
+    private String source;
     private String movieTitle;
     private Double rating;
     private String overview;

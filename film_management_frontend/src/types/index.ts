@@ -176,14 +176,37 @@ export interface BookingRequest {
   seatCodes: string[];
 }
 
+export interface BookingIntentDTO {
+  movieTitle: string;
+  showingDate: string;
+  startTime?: string;
+  endTime?: string;
+  seatCount: number;
+  seatPriority: string;
+  preferCenter: boolean;
+}
+
+export interface BookingChatData {
+  movieTitle: string;
+  idShowtime: string;
+  idRoom: string;
+  showTime: string;
+  selectedSeats: SeatStatusDTO[];
+  seatMap: SeatStatusDTO[];
+  totalAmount: number;
+  status: 'PREVIEW' | 'CONFIRMED';
+  billId?: string;
+}
+
 // AI Chatbot Types
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
-  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_REVIEW' | 'BOOKING_ACTION';
+  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_DETAIL' | 'MOVIE_REVIEW' | 'BOOKING_PREVIEW' | 'BOOKING_CONFIRMED';
   data?: MovieSummaryDTO[];
+  booking?: BookingChatData;
 }
 
 export interface MovieSummaryDTO {
@@ -207,6 +230,7 @@ export interface ChatResponse {
   conversationId: string;
   answer?: string;
   timestamp: string;
-  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_REVIEW' | 'BOOKING_ACTION';
+  type?: 'TEXT' | 'MOVIE_LIST' | 'MOVIE_DETAIL' | 'MOVIE_REVIEW' | 'BOOKING_REQUEST';
   data?: MovieSummaryDTO[];
+  booking?: BookingIntentDTO;
 }

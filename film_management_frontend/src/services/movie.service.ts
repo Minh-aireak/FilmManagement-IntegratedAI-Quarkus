@@ -33,7 +33,7 @@ export const movieService = {
     return response.data.result;
   },
 
-  getAllShowtimes: async (page: number, size: number, status: string = 'upcoming', movieId?: string, date?: string, roomId?: string) => {
+  getAllShowtimes: async (page: number, size: number, status: string = 'upcoming', movieId?: string, date?: string, roomId?: string, search?: string) => {
     const response = await api.get<ApiResponse<PageResponse<Showtime[]>>>('/showtimes', {
     params: {
       page,
@@ -41,7 +41,8 @@ export const movieService = {
       status,
       movieId,
       date,
-      roomId
+      roomId,
+      search
     }
   });
     return response.data.result;

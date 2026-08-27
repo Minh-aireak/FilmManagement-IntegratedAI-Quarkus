@@ -17,6 +17,8 @@ import org.film.management.repository.*;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -56,19 +58,29 @@ public class MovieService {
                 .build();
     }
 
-    public PageResponse<Movie> getMoviesByDate(String dateStr, int page, int size) {
+    public PageResponse<Movie> getMoviesByDate(String dateStr, int page, int size,
+                                                String startTimeStr, String endTimeStr) {
         if (page < 0 || size <= 0) {
             throw new AppException(ErrorCode.INVALID_PAGE);
         }
 
         LocalDate parsedDate = LocalDate.parse(dateStr);
 
-        LocalDateTime startOfDay = parsedDate.atStartOfDay();
-        LocalDateTime endOfDay = parsedDate.atTime(23, 59, 59);
+        LocalDateTime now = LocalDateTime.now();
+        DateTimeFormatter timeFormatter = DateTimeFormatter.ofPattern("H:mm");
+        LocalDateTime requestedStart = startTimeStr == null || startTimeStr.isBlank()
+                ? parsedDate.atStartOfDay()
+                : parsedDate.atTime(LocalTime.parse(startTimeStr.trim(), timeFormatter));
+        LocalDateTime startTime = parsedDate.equals(now.toLocalDate()) && requestedStart.isBefore(now)
+                ? now
+                : requestedStart;
+        LocalDateTime endTime = endTimeStr == null || endTimeStr.isBlank()
+                ? parsedDate.atTime(LocalTime.MAX)
+                : parsedDate.atTime(LocalTime.parse(endTimeStr.trim(), timeFormatter));
 
         PanacheQuery<Movie> query = movieRepository.find(
                 "idMovie IN (SELECT s.idMovie FROM Showtime s WHERE s.showTime >= ?1 AND s.showTime <= ?2)",
-                startOfDay, endOfDay
+                startTime, endTime
         ).page(Page.of(page, size));
 
         return PageResponse.<Movie>builder()

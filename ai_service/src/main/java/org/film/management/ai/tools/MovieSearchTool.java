@@ -6,13 +6,16 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.film.management.client.MovieServiceClient;
+import org.film.management.client.MovieStatsClient;
 import org.film.management.dto.MovieDto;
 import org.film.management.dto.MovieSearchRequest;
 import org.film.management.dto.MovieServiceMovieResponse;
 import org.film.management.dto.MovieServiceResponse;
+import org.film.management.dto.MovieStatsResponse;
 import org.film.management.exception.AIServiceException;
 import org.jboss.logging.Logger;
 
+import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
@@ -31,6 +34,10 @@ public class MovieSearchTool {
     @Inject
     @RestClient
     MovieServiceClient movieServiceClient;
+
+    @Inject
+    @RestClient
+    MovieStatsClient movieStatsClient;
 
     /**
      * Search for movies from the internal database based on structured filter criteria.
@@ -104,13 +111,27 @@ public class MovieSearchTool {
                 fetchSize = Math.min(request.getLimit(), 50);
             }
 
-            // If showingDate is specified, use the getMoviesByDate endpoint
-            if (request.getShowingDate() != null && !request.getShowingDate().isBlank()) {
+            boolean popularityRequested = request.getPopularityMonth() != null
+                    || request.getPopularityYear() != null;
+
+            if (popularityRequested) {
+                LocalDate today = LocalDate.now();
+                int month = request.getPopularityMonth() != null
+                        ? request.getPopularityMonth()
+                        : today.getMonthValue();
+                int year = request.getPopularityYear() != null
+                        ? request.getPopularityYear()
+                        : today.getYear();
+                LOG.infof("Fetching top movies for month %d/%d", month, year);
+                movies = extractTopMovies(movieStatsClient.getDashboardStats(month, year));
+            } else if (request.getShowingDate() != null && !request.getShowingDate().isBlank()) {
                 LOG.infof("Fetching movies by showing date: %s", request.getShowingDate());
                 MovieServiceResponse response = movieServiceClient.getMoviesByDate(
                         request.getShowingDate(),
                         fetchPage,
-                        fetchSize
+                        fetchSize,
+                        request.getStartTime(),
+                        request.getEndTime()
                 );
                 movies = extractMovies(response);
             } else {
@@ -165,7 +186,7 @@ public class MovieSearchTool {
             movies = filteredStream.collect(Collectors.toList());
 
             // Sort results
-            if (request.getSortBy() != null && !request.getSortBy().isBlank()) {
+            if (!popularityRequested && request.getSortBy() != null && !request.getSortBy().isBlank()) {
                 boolean asc = "asc".equalsIgnoreCase(request.getSortDirection());
                 switch (request.getSortBy().toLowerCase()) {
                     case "duration":
@@ -198,7 +219,12 @@ public class MovieSearchTool {
 
             // Pagination limit in memory
             int limit = request.getLimit() != null ? Math.min(request.getLimit(), 50) : 10;
-            int pageOffset = hasClientFilter ? (request.getPage() != null ? request.getPage() * limit : 0) : 0;
+            if (popularityRequested) {
+                limit = Math.min(limit, 5);
+            }
+            int pageOffset = hasClientFilter && !popularityRequested
+                    ? (request.getPage() != null ? request.getPage() * limit : 0)
+                    : 0;
 
             List<MovieDto> optimizedMovies = movies.stream()
                     .skip(pageOffset)
@@ -226,6 +252,20 @@ public class MovieSearchTool {
             return response.getResult().getData();
         }
         return Collections.emptyList();
+    }
+
+    private List<MovieServiceMovieResponse> extractTopMovies(MovieStatsResponse response) {
+        if (response == null || response.getResult() == null || response.getResult().getTopMovies() == null) {
+            return Collections.emptyList();
+        }
+
+        return response.getResult().getTopMovies().stream()
+                .map(movie -> MovieServiceMovieResponse.builder()
+                        .idMovie(movie.getIdMovie())
+                        .nameMovie(movie.getMovieName())
+                        .image(movie.getImage())
+                        .build())
+                .collect(Collectors.toList());
     }
 
     /**

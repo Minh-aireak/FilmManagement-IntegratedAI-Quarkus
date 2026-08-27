@@ -389,6 +389,31 @@ docker run -p 8083:8083 \
 
 ## Testing
 
+### Kiểm tra nguồn dữ liệu phim ngoài (TMDB)
+
+Test mặc định dùng một TMDB client giả có ghi nhận lời gọi. Nó xác nhận tool review gọi đủ ba API ngoài
+`search/movie`, `movie/{id}` và `movie/{id}/reviews`, đồng thời không tự tạo review khi TMDB không tìm thấy phim:
+
+```powershell
+mvn -pl ai_service -Dtest=MovieReviewToolTest test
+```
+
+Để kiểm tra kết nối thật tới TMDB (test này mặc định được skip để không phụ thuộc mạng và không làm lộ API key):
+
+```powershell
+$env:TMDB_API_KEY='<your-tmdb-api-key>'
+mvn -pl ai_service -Dtest=TmdbLiveApiTest -Dtmdb.live-tests=true test
+```
+
+Kiểm tra end-to-end qua chatbot sau khi các service đã chạy:
+
+```powershell
+$body = @{ message = 'Đánh giá phim Joker từ TMDB' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri 'http://localhost:8888/ai/chat' -ContentType 'application/json' -Body $body
+```
+
+Kết quả cần ghi rõ nguồn `TMDB`; log của `ai_service` phải có dòng `TMDB external source returned ...`.
+
 Example curl commands:
 
 ```bash

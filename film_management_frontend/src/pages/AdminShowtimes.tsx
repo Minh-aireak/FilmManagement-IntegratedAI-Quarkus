@@ -12,7 +12,8 @@ const AdminShowtimes: React.FC = () => {
   const [rooms, setRooms] = useState<Room[]>(adminShowtimesCache?.rooms || []);
   const [isLoading, setIsLoading] = useState(!adminShowtimesCache);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(adminShowtimesCache?.searchTerm || '');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(adminShowtimesCache?.searchTerm || '');
   const [timeFilter, setTimeFilter] = useState<'upcoming' | 'past'>(adminShowtimesCache?.timeFilter || 'upcoming');
   const [selectedMovieId, setSelectedMovieId] = useState<string>(adminShowtimesCache?.movieId || 'all');
   const [selectedDate, setSelectedDate] = useState<string>(adminShowtimesCache?.date || '');
@@ -27,7 +28,16 @@ const AdminShowtimes: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, [timeFilter, selectedMovieId, selectedDate, selectedRoomId, currentPage]);
+  }, [timeFilter, selectedMovieId, selectedDate, selectedRoomId, currentPage, debouncedSearchTerm]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+      setCurrentPage(0);
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchTerm]);
 
   const fetchData = async (force = false, silent = false) => {
     // Nếu đã có cache và các tham số khớp và không yêu cầu force refresh thì không fetch lại
@@ -37,6 +47,7 @@ const AdminShowtimes: React.FC = () => {
         selectedMovieId === (adminShowtimesCache.movieId || 'all') &&
         selectedDate === (adminShowtimesCache.date || '') &&
         selectedRoomId === (adminShowtimesCache.roomId || 'all') &&
+        debouncedSearchTerm === (adminShowtimesCache.searchTerm || '') &&
         showtimes.length > 0) {
       setIsLoading(false);
       return;
@@ -51,7 +62,8 @@ const AdminShowtimes: React.FC = () => {
           timeFilter, 
           selectedMovieId === 'all' ? undefined : selectedMovieId,
           selectedDate || undefined,
-          selectedRoomId === 'all' ? undefined : selectedRoomId
+          selectedRoomId === 'all' ? undefined : selectedRoomId,
+          debouncedSearchTerm || undefined
         ),
         movies.length === 0 ? movieService.getPageMovies(0, 100) : Promise.resolve(null),
         rooms.length === 0 ? movieService.getRooms() : Promise.resolve(null)
@@ -76,7 +88,8 @@ const AdminShowtimes: React.FC = () => {
         timeFilter: timeFilter,
         movieId: selectedMovieId,
         date: selectedDate,
-        roomId: selectedRoomId
+        roomId: selectedRoomId,
+        searchTerm: debouncedSearchTerm
       });
     } catch (err: any) {
       showToast('Không thể tải dữ liệu lịch chiếu.', 'error');
@@ -184,11 +197,6 @@ const AdminShowtimes: React.FC = () => {
     return movies.find(m => m.idMovie === movieId)?.image || '';
   };
 
-  const filteredShowtimes = showtimes.filter(st => {
-    return getMovieName(st.idMovie, st).toLowerCase().includes(searchTerm.toLowerCase()) ||
-           st.idRoom.toLowerCase().includes(searchTerm.toLowerCase());
-  });
-
   // Admin Header
   return (
     <div className="space-y-8">
@@ -220,10 +228,7 @@ const AdminShowtimes: React.FC = () => {
                 type="text"
                 placeholder="Tìm kiếm nhanh..."
                 value={searchTerm}
-                onChange={(e) => {
-                  setSearchTerm(e.target.value);
-                  setCurrentPage(0);
-                }}
+                onChange={(e) => setSearchTerm(e.target.value)}
                 className="block w-full pl-10 pr-3 py-3 bg-neutral-800 border border-neutral-700 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-transparent text-white placeholder-neutral-500 outline-none transition-all"
               />
             </div>
@@ -300,7 +305,7 @@ const AdminShowtimes: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-800">
-              {filteredShowtimes.map((st) => (
+              {showtimes.map((st) => (
                 <tr 
                   key={st.idShowtime} 
                   className="hover:bg-neutral-800/30 transition-colors group"
@@ -351,7 +356,7 @@ const AdminShowtimes: React.FC = () => {
                   </td>
                 </tr>
               ))}
-              {filteredShowtimes.length === 0 && !isLoading && (
+              {showtimes.length === 0 && !isLoading && (
                 <tr>
                   <td colSpan={5} className="px-4 py-12 text-center text-neutral-500 italic">
                     Không tìm thấy suất chiếu nào phù hợp.

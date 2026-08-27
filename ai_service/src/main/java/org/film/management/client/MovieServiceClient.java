@@ -26,7 +26,9 @@ public interface MovieServiceClient {
     MovieServiceResponse getMoviesByDate(
             @PathParam("date") String date,
             @QueryParam("page") @DefaultValue("0") int page,
-            @QueryParam("size") @DefaultValue("10") int size
+            @QueryParam("size") @DefaultValue("10") int size,
+            @QueryParam("startTime") String startTime,
+            @QueryParam("endTime") String endTime
     );
 
     @GET

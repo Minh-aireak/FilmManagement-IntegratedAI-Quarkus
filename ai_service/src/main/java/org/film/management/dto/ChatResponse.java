@@ -23,7 +23,9 @@ public class ChatResponse {
      * Response type: 
      * - "TEXT" for normal AI chat
      * - "MOVIE_LIST" for structured movie list response
+     * - "MOVIE_DETAIL" for movie content followed by a detail link
      * - "MOVIE_REVIEW" for movie review response
+     * - "BOOKING_REQUEST" for a parsed booking request awaiting live preview and confirmation
      */
     private String type;
 
@@ -33,4 +35,6 @@ public class ChatResponse {
     private List<MovieSummaryDTO> data;
 
     private ReviewDto review;
+
+    private BookingIntentRequest booking;
 }

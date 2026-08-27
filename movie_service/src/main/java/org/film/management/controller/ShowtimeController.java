@@ -38,10 +38,11 @@ public class ShowtimeController {
             @QueryParam("status") String status,
             @QueryParam("movieId") String movieId,
             @QueryParam("date") String date,
-            @QueryParam("roomId") String roomId) {
+            @QueryParam("roomId") String roomId,
+            @QueryParam("search") String search) {
         return ApiResponse.<PageResponse<ShowtimeResponse>>builder()
                 .message("Get all showtimes successfully!")
-                .result(showtimeService.getAllShowtimes(page, size, status, movieId, date, roomId))
+                .result(showtimeService.getAllShowtimes(page, size, status, movieId, date, roomId, search))
                 .build();
     }
 

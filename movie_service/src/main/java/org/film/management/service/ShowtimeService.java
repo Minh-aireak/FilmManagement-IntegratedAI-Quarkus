@@ -14,6 +14,7 @@ import org.film.management.exception.ErrorCode;
 import org.film.management.repository.*;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -71,7 +72,8 @@ public class ShowtimeService {
                 .build();
     }
 
-    public PageResponse<ShowtimeResponse> getAllShowtimes(int page, int size, String status, String idMovie, String date, String idRoom) {
+    public PageResponse<ShowtimeResponse> getAllShowtimes(int page, int size, String status, String idMovie,
+                                                          String date, String idRoom, String search) {
         if (page < 0 || size <= 0) {
             throw new AppException(ErrorCode.INVALID_PAGE);
         }
@@ -100,6 +102,12 @@ public class ShowtimeService {
         if (idRoom != null && !idRoom.isEmpty() && !idRoom.equalsIgnoreCase("all")) {
             queryBuilder.append(" AND idRoom = :idRoom");
             params.put("idRoom", idRoom);
+        }
+
+        if (search != null && !search.isBlank()) {
+            queryBuilder.append(" AND (LOWER(idRoom) LIKE :search OR idMovie IN " +
+                    "(SELECT movie.idMovie FROM Movie movie WHERE LOWER(movie.nameMovie) LIKE :search))");
+            params.put("search", "%" + search.trim().toLowerCase(Locale.ROOT) + "%");
         }
 
         if (date != null && !date.isEmpty()) {

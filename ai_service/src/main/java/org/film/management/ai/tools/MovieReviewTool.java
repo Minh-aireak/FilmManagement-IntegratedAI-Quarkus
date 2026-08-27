@@ -119,7 +119,11 @@ public class MovieReviewTool {
             // Generate popular opinion
             String popularOpinion = generatePopularOpinion(movieDetails, reviews);
 
+            LOG.infof("TMDB external source returned movieId=%s, rating=%.1f and %d review(s)",
+                    movieId, movieDetails.getVote_average(), reviews.size());
+
             return ReviewDto.builder()
+                    .source("TMDB")
                     .movieTitle(movieDetails.getTitle())
                     .rating(movieDetails.getVote_average())
                     .overview(movieDetails.getOverview())

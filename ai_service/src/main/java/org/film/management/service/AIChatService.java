@@ -20,6 +20,7 @@ import org.film.management.ai.AIService;
 import org.film.management.ai.tools.MovieReviewTool;
 import org.film.management.ai.tools.MovieSearchTool;
 import org.film.management.config.AIConfig;
+import org.film.management.dto.BookingIntentRequest;
 import org.film.management.dto.ChatRequest;
 import org.film.management.dto.ChatResponse;
 import org.film.management.dto.MovieDto;
@@ -93,7 +94,16 @@ public class AIChatService {
     /** conversationId -&gt; the user turns seen so far, used to build the cache key. */
     private final Map<String, List<String>> transcripts = new ConcurrentHashMap<>();
 
-    private record CachedAnswer(ChatResponse response, long storedAtMillis) {
+    private record CachedAnswer(ChatResponse response, MovieSearchRequest searchRequest, long storedAtMillis) {
+    }
+
+    private record MovieListResult(ChatResponse response, MovieSearchRequest searchRequest) {
+    }
+
+    private record MovieDetailToolResult(String serializedResult, List<MovieSummaryDTO> summaries) {
+    }
+
+    private record MovieReviewToolResult(String serializedResult, ReviewDto review) {
     }
 
     /** Immutable and identical on every call, so it is built once instead of per iteration. */
@@ -236,6 +246,8 @@ public class AIChatService {
 
         // Load the full conversation history (system prompt + history + current user message)
         List<ChatMessage> messages = new ArrayList<>(chatMemory.messages());
+        List<MovieSummaryDTO> detailMovieLinks = null;
+        ReviewDto externalMovieReview = null;
 
         // Execute tool loop
         for (int iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -255,6 +267,18 @@ public class AIChatService {
                 LOG.infof("Executing %d tool(s) at iteration %d",
                         aiMessage.toolExecutionRequests().size(), iteration);
 
+                boolean hasPrepareBooking = aiMessage.toolExecutionRequests().stream()
+                        .anyMatch(ter -> "prepareBooking".equals(ter.name()));
+
+                if (hasPrepareBooking) {
+                    ChatResponse bookingResponse = handleBookingRequest(
+                            aiMessage.toolExecutionRequests(), conversationId);
+                    chatMemory.add(AiMessage.from(bookingResponse.getAnswer()));
+                    // Live showtimes and seats can change at any moment, so booking
+                    // requests deliberately bypass the replay cache.
+                    return bookingResponse;
+                }
+
                 // Check if this is a searchMovies request - return MOVIE_LIST immediately
                 // This avoids waiting for the LLM to generate text, making the frontend render faster
                 boolean hasSearchMovies = aiMessage.toolExecutionRequests().stream()
@@ -262,22 +286,36 @@ public class AIChatService {
 
                 if (hasSearchMovies) {
                     LOG.infof("Detected searchMovies tool call - checking if list or detail query");
-                    ChatResponse movieListResponse = handleMovieListResponse(aiMessage.toolExecutionRequests(), conversationId);
-                    if (movieListResponse != null) {
+                    MovieListResult movieListResult = handleMovieListResponse(aiMessage.toolExecutionRequests(), conversationId);
+                    if (movieListResult != null) {
+                        ChatResponse movieListResponse = movieListResult.response();
                         // List query - return MOVIE_LIST structured response immediately.
                         // Persist a plain-text stand-in rather than the tool-call message: we
                         // answer without completing the tool round trip, so storing aiMessage
                         // would leave tool_calls with no matching tool results in the history
                         // and the provider rejects the next request in this conversation.
                         chatMemory.add(AiMessage.from(describeMovieList(movieListResponse)));
-                        return remember(cacheKey, movieListResponse);
+                        return remember(cacheKey, movieListResponse, movieListResult.searchRequest());
                     }
                     // Detail query (specific movie name) - continue tool loop to let LLM generate text
                     LOG.infof("Detail query - continuing tool loop for LLM text generation");
                     messages.add(aiMessage);
                     chatMemory.add(aiMessage); // Persist AI request to memory
                     for (ToolExecutionRequest ter : aiMessage.toolExecutionRequests()) {
-                        String toolResult = executeToolByName(ter);
+                        String toolResult;
+                        if ("searchMovies".equals(ter.name())) {
+                            MovieDetailToolResult detailResult = executeDetailMovieSearch(ter);
+                            toolResult = detailResult.serializedResult();
+                            if (!detailResult.summaries().isEmpty()) {
+                                detailMovieLinks = detailResult.summaries();
+                            }
+                        } else if ("getMovieReviews".equals(ter.name())) {
+                            MovieReviewToolResult reviewResult = executeMovieReview(ter);
+                            toolResult = reviewResult.serializedResult();
+                            externalMovieReview = reviewResult.review();
+                        } else {
+                            toolResult = executeToolByName(ter);
+                        }
                         LOG.debugf("Tool %s executed", ter.name());
                         ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(ter, toolResult);
                         messages.add(resultMessage);
@@ -291,7 +329,14 @@ public class AIChatService {
                 chatMemory.add(aiMessage); // Persist AI request to memory
 
                 for (ToolExecutionRequest ter : aiMessage.toolExecutionRequests()) {
-                    String toolResult = executeToolByName(ter);
+                    String toolResult;
+                    if ("getMovieReviews".equals(ter.name())) {
+                        MovieReviewToolResult reviewResult = executeMovieReview(ter);
+                        toolResult = reviewResult.serializedResult();
+                        externalMovieReview = reviewResult.review();
+                    } else {
+                        toolResult = executeToolByName(ter);
+                    }
                     LOG.debugf("Tool %s executed", ter.name());
                     ToolExecutionResultMessage resultMessage = ToolExecutionResultMessage.from(ter, toolResult);
                     messages.add(resultMessage);
@@ -305,10 +350,18 @@ public class AIChatService {
             if (aiMessage.text() != null && !aiMessage.text().trim().isEmpty()) {
                 LOG.infof("Got final text response at iteration %d", iteration);
                 chatMemory.add(aiMessage); // Persist final response to memory
+                boolean hasMovieDetailLink = detailMovieLinks != null && !detailMovieLinks.isEmpty();
+                boolean hasExternalReview = externalMovieReview != null;
+                String finalAnswer = normalizeAnswerSpacing(aiMessage.text());
+                if (hasExternalReview && !finalAnswer.toUpperCase().contains("TMDB")) {
+                    finalAnswer += "\n\n*Nguồn dữ liệu ngoài: TMDB*";
+                }
                 return remember(cacheKey, ChatResponse.builder()
                         .conversationId(conversationId)
-                        .answer(aiMessage.text())
-                        .type("TEXT")
+                        .answer(finalAnswer)
+                        .type(hasMovieDetailLink ? "MOVIE_DETAIL" : hasExternalReview ? "MOVIE_REVIEW" : "TEXT")
+                        .data(hasMovieDetailLink ? detailMovieLinks : null)
+                        .review(externalMovieReview)
                         .timestamp(LocalDateTime.now().toString())
                         .build());
             }
@@ -349,7 +402,7 @@ public class AIChatService {
      * - Detail queries → rich text response from LLM with full movie details
      * </p>
      */
-    private ChatResponse handleMovieListResponse(List<ToolExecutionRequest> toolRequests, String conversationId) {
+    private MovieListResult handleMovieListResponse(List<ToolExecutionRequest> toolRequests, String conversationId) {
         try {
             // Find the searchMovies request
             ToolExecutionRequest searchRequest = toolRequests.stream()
@@ -358,12 +411,12 @@ public class AIChatService {
                     .orElse(null);
 
             if (searchRequest == null) {
-                return ChatResponse.builder()
+                return new MovieListResult(ChatResponse.builder()
                         .conversationId(conversationId)
                         .answer("Không tìm thấy yêu cầu tìm phim.")
                         .type("TEXT")
                         .timestamp(LocalDateTime.now().toString())
-                        .build();
+                        .build(), null);
             }
 
             // Parse arguments into strongly typed request object
@@ -384,31 +437,68 @@ public class AIChatService {
                 return null; // Signal to caller to continue the tool loop
             }
 
-            // Call the actual tool
-            List<MovieDto> movies = movieSearchTool.searchMovies(searchRequestObj);
-
-            // Convert to MovieSummaryDTO (id + title only for frontend rendering)
-            List<MovieSummaryDTO> summaries = movies.stream()
-                    .map(m -> MovieSummaryDTO.builder()
-                            .id(m.getIdMovie())
-                            .title(m.getNameMovie())
-                            .build())
-                    .collect(Collectors.toList());
-
-            LOG.infof("MOVIE_LIST response: %d movies", summaries.size());
-
-            return ChatResponse.builder()
-                    .conversationId(conversationId)
-                    .type("MOVIE_LIST")
-                    .data(summaries)
-                    .timestamp(LocalDateTime.now().toString())
-                    .build();
+            return new MovieListResult(buildMovieListResponse(searchRequestObj, conversationId), searchRequestObj);
 
         } catch (Exception e) {
             LOG.errorf("Error handling MOVIE_LIST response: %s", e.getMessage());
-            return ChatResponse.builder()
+            return new MovieListResult(ChatResponse.builder()
                     .conversationId(conversationId)
                     .answer("Có lỗi xảy ra khi tìm kiếm phim: " + e.getMessage())
+                    .type("TEXT")
+                    .timestamp(LocalDateTime.now().toString())
+                    .build(), null);
+        }
+    }
+
+    private ChatResponse buildMovieListResponse(MovieSearchRequest searchRequest, String conversationId) {
+        List<MovieDto> movies = movieSearchTool.searchMovies(searchRequest);
+        List<MovieSummaryDTO> summaries = movies.stream()
+                .map(movie -> MovieSummaryDTO.builder()
+                        .id(movie.getIdMovie())
+                        .title(movie.getNameMovie())
+                        .build())
+                .collect(Collectors.toList());
+
+        LOG.infof("MOVIE_LIST response: %d movies", summaries.size());
+
+        return ChatResponse.builder()
+                .conversationId(conversationId)
+                .type("MOVIE_LIST")
+                .data(summaries)
+                .timestamp(LocalDateTime.now().toString())
+                .build();
+    }
+
+    private ChatResponse handleBookingRequest(List<ToolExecutionRequest> toolRequests, String conversationId) {
+        try {
+            ToolExecutionRequest toolRequest = toolRequests.stream()
+                    .filter(ter -> "prepareBooking".equals(ter.name()))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Thiếu yêu cầu chuẩn bị đặt vé"));
+
+            BookingIntentRequest booking = MAPPER.readValue(
+                    toolRequest.arguments(), BookingIntentRequest.class).sanitized();
+            if (booking.getMovieTitle() == null) {
+                return ChatResponse.builder()
+                        .conversationId(conversationId)
+                        .answer("Bạn muốn mình đặt vé cho phim nào?")
+                        .type("TEXT")
+                        .timestamp(LocalDateTime.now().toString())
+                        .build();
+            }
+
+            return ChatResponse.builder()
+                    .conversationId(conversationId)
+                    .answer("Mình đã hiểu yêu cầu. Đang kiểm tra suất chiếu và ghế còn trống để gửi bạn xác nhận.")
+                    .type("BOOKING_REQUEST")
+                    .booking(booking)
+                    .timestamp(LocalDateTime.now().toString())
+                    .build();
+        } catch (Exception e) {
+            LOG.errorf("Could not parse booking request: %s", e.getMessage());
+            return ChatResponse.builder()
+                    .conversationId(conversationId)
+                    .answer("Mình chưa hiểu đủ thông tin đặt vé. Bạn vui lòng cho biết tên phim, ngày, khoảng giờ và số lượng ghế.")
                     .type("TEXT")
                     .timestamp(LocalDateTime.now().toString())
                     .build();
@@ -430,8 +520,12 @@ public class AIChatService {
      * - It has limit = 1 with a keyword
      */
     private boolean isListRequest(MovieSearchRequest request) {
+        if (request.getPopularityMonth() != null || request.getPopularityYear() != null) {
+            return true;
+        }
+
         // If has a specific keyword and limit is not set or limit is 1, prioritize detail query
-        if (request.getKeyword() != null && !request.getKeyword().isBlank() && 
+        if (request.getKeyword() != null && !request.getKeyword().isBlank() &&
                 (request.getLimit() == null || request.getLimit() <= 1)) {
             return false;
         }
@@ -508,6 +602,40 @@ public class AIChatService {
         }
     }
 
+    private MovieDetailToolResult executeDetailMovieSearch(ToolExecutionRequest request) {
+        try {
+            MovieSearchRequest searchRequest = MAPPER.readValue(request.arguments(), MovieSearchRequest.class)
+                    .sanitized();
+            List<MovieDto> movies = movieSearchTool.searchMovies(searchRequest);
+            List<MovieSummaryDTO> summaries = movies.stream()
+                    .limit(1)
+                    .map(movie -> MovieSummaryDTO.builder()
+                            .id(movie.getIdMovie())
+                            .title(movie.getNameMovie())
+                            .build())
+                    .collect(Collectors.toList());
+            return new MovieDetailToolResult(MAPPER.writeValueAsString(toCompactView(movies)), summaries);
+        } catch (Exception e) {
+            LOG.errorf("Error executing detail movie search: %s", e.getMessage());
+            return new MovieDetailToolResult(
+                    "{\"error\": \"Failed to execute searchMovies: " + e.getMessage() + "\"}",
+                    List.of());
+        }
+    }
+
+    private MovieReviewToolResult executeMovieReview(ToolExecutionRequest request) {
+        try {
+            MovieReviewRequest reviewRequest = MAPPER.readValue(
+                    request.arguments(), MovieReviewRequest.class).sanitized();
+            ReviewDto review = movieReviewTool.getMovieReviews(reviewRequest);
+            return new MovieReviewToolResult(MAPPER.writeValueAsString(review), review);
+        } catch (Exception e) {
+            LOG.errorf("Error executing external movie review lookup: %s", e.getMessage());
+            return new MovieReviewToolResult(
+                    "{\"error\": \"Failed to execute getMovieReviews\"}", null);
+        }
+    }
+
     /**
      * Build tool specifications from the @Tool annotations on tool classes.
      * Called once from init(); the result is reused for every request.
@@ -532,13 +660,40 @@ public class AIChatService {
                 .addParameter("page", dev.langchain4j.agent.tool.JsonSchemaProperty.INTEGER,
                         dev.langchain4j.agent.tool.JsonSchemaProperty.description("Page number (0-based). Default: 0"))
                 .addParameter("limit", dev.langchain4j.agent.tool.JsonSchemaProperty.INTEGER,
-                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Results per page. Default: 10. Max: 50"))
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Results per page. MUST be 1 when the user asks for the content, synopsis, or details of one named movie. Default: 10. Max: 50"))
                 .addParameter("sortBy", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
                         dev.langchain4j.agent.tool.JsonSchemaProperty.description("Sort field. Supported: \"createdAt\" (newest/oldest), \"nameMovie\" (alphabetical), \"duration\" (runtime). Default: \"createdAt\""))
                 .addParameter("sortDirection", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
                         dev.langchain4j.agent.tool.JsonSchemaProperty.description("\"asc\" or \"desc\". Default: \"desc\""))
                 .addParameter("showingDate", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
                         dev.langchain4j.agent.tool.JsonSchemaProperty.description("Date to find movies showing on, format yyyy-MM-dd. For today/tonight use the date given in the NGAY HIEN TAI section of the system prompt. Uses showtime data"))
+                .addParameter("startTime", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Optional earliest showtime on showingDate, inclusive, format HH:mm. Example: 19:00"))
+                .addParameter("endTime", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Optional latest showtime on showingDate, inclusive, format HH:mm. Example: 23:00"))
+                .addParameter("popularityMonth", dev.langchain4j.agent.tool.JsonSchemaProperty.INTEGER,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Month 1-12 for hot/popular movies ranked by actual sold-ticket count. Use the current month for 'this month'"))
+                .addParameter("popularityYear", dev.langchain4j.agent.tool.JsonSchemaProperty.INTEGER,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Year for hot/popular movie ranking. Use the current year when omitted by the user"))
+                .build());
+
+        specs.add(dev.langchain4j.agent.tool.ToolSpecification.builder()
+                .name("prepareBooking")
+                .description("Parse a request to book or reserve cinema tickets. This prepares a live booking preview only; it never creates a booking. Use it when the user asks the chatbot to book tickets for a named movie. Do not use it for instructions about how to book.")
+                .addParameter("movieTitle", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Movie title requested by the user. Required."))
+                .addParameter("showingDate", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Requested date in yyyy-MM-dd. Resolve today/tomorrow using the current date in the system prompt."))
+                .addParameter("startTime", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Start of the acceptable showtime range in HH:mm."))
+                .addParameter("endTime", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("End of the acceptable showtime range in HH:mm."))
+                .addParameter("seatCount", dev.langchain4j.agent.tool.JsonSchemaProperty.INTEGER,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Number of seats. Default to 1 if the user does not specify it."))
+                .addParameter("seatPriority", dev.langchain4j.agent.tool.JsonSchemaProperty.STRING,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("Comma-separated priority using VIP,STANDARD,COUPLE. Map Vietnamese 'thường' to STANDARD and unsupported 'triple' to COUPLE."))
+                .addParameter("preferCenter", dev.langchain4j.agent.tool.JsonSchemaProperty.BOOLEAN,
+                        dev.langchain4j.agent.tool.JsonSchemaProperty.description("True when the user prefers seats near the horizontal and vertical center facing the screen."))
                 .build());
 
         // getMovieReviews tool spec
@@ -561,7 +716,7 @@ public class AIChatService {
     /** One conversation replayed turn-for-turn produces the same key at every turn. */
     private static String cacheKey(List<String> transcript) {
         synchronized (transcript) {
-            return String.join(" ", transcript).toLowerCase().trim();
+            return String.join("\\0", transcript).toLowerCase().trim();
         }
     }
 
@@ -580,6 +735,18 @@ public class AIChatService {
         }
         // Re-stamp so the client keeps tracking its own conversation, not the cached one.
         ChatResponse source = hit.response();
+        MovieSearchRequest searchRequest = hit.searchRequest();
+        if (searchRequest != null && (searchRequest.getShowingDate() != null
+                || searchRequest.getPopularityMonth() != null
+                || searchRequest.getPopularityYear() != null)) {
+            try {
+                source = buildMovieListResponse(searchRequest, conversationId);
+            } catch (RuntimeException e) {
+                LOG.warnf("Could not refresh cached showtime result: %s", e.getMessage());
+                answerCache.remove(key);
+                return null;
+            }
+        }
         return ChatResponse.builder()
                 .conversationId(conversationId)
                 .answer(source.getAnswer())
@@ -591,11 +758,15 @@ public class AIChatService {
     }
 
     private ChatResponse remember(String key, ChatResponse response) {
+        return remember(key, response, null);
+    }
+
+    private ChatResponse remember(String key, ChatResponse response, MovieSearchRequest searchRequest) {
         if (aiConfig.isCacheEnabled()) {
             if (answerCache.size() >= MAX_CACHED_ANSWERS) {
                 answerCache.clear();
             }
-            answerCache.put(key, new CachedAnswer(response, System.currentTimeMillis()));
+            answerCache.put(key, new CachedAnswer(response, searchRequest, System.currentTimeMillis()));
         }
         return response;
     }
@@ -642,6 +813,16 @@ public class AIChatService {
         return text.substring(0, maxChars).trim() + "…";
     }
 
+    private static String normalizeAnswerSpacing(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replace("\r\n", "\n")
+                .replaceAll("(?m)[\\t ]+$", "")
+                .replaceAll("\n{3,}", "\n\n")
+                .trim();
+    }
+
     /**
      * The model has no clock of its own, so "phim đang chiếu hôm nay" would otherwise be
      * answered with whatever date happens to appear in the prompt examples. Append the
@@ -652,6 +833,9 @@ public class AIChatService {
         return "\n\n===== NGÀY HIỆN TẠI =====\n"
                 + "Hôm nay là " + today.format(DateTimeFormatter.ofPattern("EEEE dd/MM/yyyy"))
                 + ", tức showingDate=\"" + today + "\".\n"
+                + "Tháng hiện tại là " + today.getMonthValue() + "/" + today.getYear()
+                + ", dùng popularityMonth=" + today.getMonthValue()
+                + " và popularityYear=" + today.getYear() + " khi người dùng nói 'trong tháng' hoặc 'tháng này'.\n"
                 + "- \"hôm nay\", \"đang chiếu\", \"tối nay\" -> showingDate=\"" + today + "\"\n"
                 + "- \"ngày mai\" -> showingDate=\"" + today.plusDays(1) + "\"\n"
                 + "- \"cuối tuần này\", \"sắp chiếu\" -> dùng một ngày từ " + today
