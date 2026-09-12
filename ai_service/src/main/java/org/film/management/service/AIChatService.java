@@ -12,7 +12,6 @@ import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.output.Response;
-import dev.langchain4j.service.AiServices;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -118,7 +117,6 @@ public class AIChatService {
     @Inject
     MovieReviewTool movieReviewTool;
 
-    private AIService aiService;
     private ChatLanguageModel chatModel;
     private ChatLanguageModel fallbackChatModel;
 
@@ -136,18 +134,11 @@ public class AIChatService {
             LOG.infof("Fallback model configured: %s", fallback);
         }
 
-        // Use AiServices to automatically:
-        // 1. Bind @Tool annotated methods from tool instances
-        // 2. Generate ToolSpecifications from @Tool annotations and parameter types
-        // 3. Route tool execution requests to the correct method
-        // 4. Inject the system prompt from @SystemMessage on the AIService interface
-        this.aiService = AiServices.builder(AIService.class)
-                .chatLanguageModel(chatModel)
-                .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
-                .tools(movieSearchTool, movieReviewTool)
-                .build();
-
-        LOG.info("AI Chat Service initialized successfully with AiServices");
+        // No AiServices proxy: the tool loop in executeToolLoop drives chatModel.generate()
+        // directly so it can short-circuit list queries, return booking intents without a
+        // second model round, and fail over to fallbackChatModel. AIService is kept only as
+        // the home of the @SystemMessage prompt (see getSystemPromptFromAnnotation).
+        LOG.info("AI Chat Service initialized");
     }
 
     public ChatResponse chat(ChatRequest request) {
